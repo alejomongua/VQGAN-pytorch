@@ -60,7 +60,7 @@ def midi_to_spectrograms(midi_file, target_shape=512):
     return np.array(chunks)
 
 
-def create_spectrogram_dataset(midi_folder_path, pickle_file_path='spectrograms.pkl'):
+def create_spectrogram_dataset(pickle_file_path):
     # Check if the pickle file exists
     if os.path.exists(pickle_file_path):
         # Load the spectrograms from the pickle file
@@ -69,45 +69,7 @@ def create_spectrogram_dataset(midi_folder_path, pickle_file_path='spectrograms.
             print('Loaded spectrograms from pickle file.')
         return spectrograms
 
-    # Initialize an empty list to store the spectrograms
-    spectrograms = []
-
-    # Use glob to get all subdirectories in midi_folder_path
-    artist_folders = glob.glob(os.path.join(midi_folder_path, '*'))
-
-    # Iterate over each artist folder
-    for artist_folder in artist_folders:
-        # Use glob to get all .mid files in the artist folder
-        midi_files = glob.glob(os.path.join(artist_folder, '*.mid'))
-
-        # Iterate over each midi file
-        for midi_file in midi_files:
-            # Check if it has already been converted to spectrograms
-            if os.path.exists(midi_file + '.pkl'):
-                # read it
-                with open(midi_file + '.pkl', 'rb') as f:
-                    chunks = pickle.load(f)
-            else:
-                # Convert the midi file to audio
-                print(f'Processing {midi_file}...')
-                chunks = midi_to_spectrograms(midi_file, 256)
-
-                # Save it as pickle
-                with open(midi_file + '.pkl', 'wb') as f:
-                    pickle.dump(chunks, f)
-
-            # Add the spectrograms to the list
-            spectrograms.extend(chunks)
-
-    # Convert the list of spectrograms to a numpy array
-    spectrograms = np.array(spectrograms)
-
-    # Save the spectrograms to a pickle file
-    with open(pickle_file_path, 'wb') as f:
-        pickle.dump(spectrograms, f)
-        print('Saved spectrograms to pickle file.')
-
-    return spectrograms
+    raise "NotFound"
 
 
 class MelSpectrograms(Dataset):
