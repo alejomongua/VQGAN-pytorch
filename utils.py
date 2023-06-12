@@ -1,6 +1,9 @@
 import os
-import albumentations
 import numpy as np
+import pickle
+import glob
+import librosa
+from midi2audio import FluidSynth
 import torch.nn as nn
 from PIL import Image
 from torch.utils.data import Dataset, DataLoader
@@ -10,39 +13,127 @@ import matplotlib.pyplot as plt
 # --------------------------------------------- #
 #                  Data Utils
 # --------------------------------------------- #
+SAMPLE_RATE = 22050
 
-class ImagePaths(Dataset):
-    def __init__(self, path, size=None):
-        self.size = size
 
-        self.images = [os.path.join(path, file) for file in os.listdir(path)]
-        self._length = len(self.images)
+def midi_to_audio(midi_file):
+    # Convert MIDI to WAV using FluidSynth
+    fs = FluidSynth()
+    audio_file = 'temp.wav'
+    fs.midi_to_audio(midi_file, audio_file)
 
-        self.rescaler = albumentations.SmallestMaxSize(max_size=self.size)
-        self.cropper = albumentations.CenterCrop(height=self.size, width=self.size)
-        self.preprocessor = albumentations.Compose([self.rescaler, self.cropper])
+    # Load the WAV file using librosa
+    y, _ = librosa.load(audio_file, sr=SAMPLE_RATE)
+
+    return y
+
+
+def audio_to_spectrograms(audio, target_shape=512):
+    """
+    Receives a audio and splits it into spectrograms of size target_shape
+    """
+    # Compute the spectrogram and convert to dB scale
+    D = librosa.feature.melspectrogram(y=audio, sr=SAMPLE_RATE, n_fft=2048, hop_length=1024,
+                                       n_mels=256)
+    D = librosa.power_to_db(D, ref=np.max)
+
+    # Split spectrogram into chunks of size target_shape
+    chunks = []
+    for i in range(0, D.shape[1], target_shape):
+        chunk = D[:, i:i + target_shape]
+        if chunk.shape[1] == target_shape:
+            chunks.append(chunk)
+
+    return chunks
+
+
+def midi_to_spectrograms(midi_file, target_shape=512):
+    """
+    Receives a MIDI file and splits it into spectrograms of size target_shape
+    """
+    # Convert MIDI to audio
+    y = midi_to_audio(midi_file)
+
+    # Convert audio to spectrograms
+    chunks = audio_to_spectrograms(y, target_shape)
+
+    return np.array(chunks)
+
+
+def create_spectrogram_dataset(midi_folder_path, pickle_file_path='spectrograms.pkl'):
+    # Check if the pickle file exists
+    if os.path.exists(pickle_file_path):
+        # Load the spectrograms from the pickle file
+        with open(pickle_file_path, 'rb') as f:
+            spectrograms = pickle.load(f)
+            print('Loaded spectrograms from pickle file.')
+        return spectrograms
+
+    # Initialize an empty list to store the spectrograms
+    spectrograms = []
+
+    # Use glob to get all subdirectories in midi_folder_path
+    artist_folders = glob.glob(os.path.join(midi_folder_path, '*'))
+
+    # Iterate over each artist folder
+    for artist_folder in artist_folders:
+        # Use glob to get all .mid files in the artist folder
+        midi_files = glob.glob(os.path.join(artist_folder, '*.mid'))
+
+        # Iterate over each midi file
+        for midi_file in midi_files:
+            # Check if it has already been converted to spectrograms
+            if os.path.exists(midi_file + '.pkl'):
+                # read it
+                with open(midi_file + '.pkl', 'rb') as f:
+                    chunks = pickle.load(f)
+            else:
+                # Convert the midi file to audio
+                print(f'Processing {midi_file}...')
+                chunks = midi_to_spectrograms(midi_file, 256)
+
+                # Save it as pickle
+                with open(midi_file + '.pkl', 'wb') as f:
+                    pickle.dump(chunks, f)
+
+            # Add the spectrograms to the list
+            spectrograms.extend(chunks)
+
+    # Convert the list of spectrograms to a numpy array
+    spectrograms = np.array(spectrograms)
+
+    # Save the spectrograms to a pickle file
+    with open(pickle_file_path, 'wb') as f:
+        pickle.dump(spectrograms, f)
+        print('Saved spectrograms to pickle file.')
+
+    return spectrograms
+
+
+class MelSpectrograms(Dataset):
+    def __init__(self, path):
+        super().__init__()
+
+        spectrograms = create_spectrogram_dataset(path)
+        # Normalize between -1 and 1
+        self.min_val = np.min(spectrograms)
+        self.max_val = np.max(spectrograms)
+        self._length = len(spectrograms)
+        spectrograms = np.expand_dims(spectrograms, axis=1)
+        self.images = (spectrograms - self.min_val) / \
+            ((self.max_val - self.min_val) / 2) - 1
 
     def __len__(self):
         return self._length
 
-    def preprocess_image(self, image_path):
-        image = Image.open(image_path)
-        if not image.mode == "RGB":
-            image = image.convert("RGB")
-        image = np.array(image).astype(np.uint8)
-        image = self.preprocessor(image=image)["image"]
-        image = (image / 127.5 - 1.0).astype(np.float32)
-        image = image.transpose(2, 0, 1)
-        return image
-
     def __getitem__(self, i):
-        example = self.preprocess_image(self.images[i])
-        return example
+        return self.images[i]
 
 
 def load_data(args):
-    train_data = ImagePaths(args.dataset_path, size=256)
-    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=False)
+    train_data = MelSpectrograms(args.dataset_path)
+    train_loader = DataLoader(
+        train_data, batch_size=args.batch_size, shuffle=False)
     return train_loader
 
 
@@ -61,7 +152,10 @@ def weights_init(m):
 
 
 def plot_images(images):
-    x = images["input"]
+    # To do: View what is input to this function and adapt the code to plot it
+    print(images)
+
+    """x = images["input"]
     reconstruction = images["rec"]
     half_sample = images["half_sample"]
     full_sample = images["full_sample"]
@@ -72,3 +166,4 @@ def plot_images(images):
     axarr[2].imshow(half_sample.cpu().detach().numpy()[0].transpose(1, 2, 0))
     axarr[3].imshow(full_sample.cpu().detach().numpy()[0].transpose(1, 2, 0))
     plt.show()
+    """
